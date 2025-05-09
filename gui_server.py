@@ -21,11 +21,9 @@ context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
 
 clients = []
 
-
 class ChatServerWindow(QWidget):
     def __init__(self):
         super().__init__()
-
         self.setWindowTitle("Secure Chat Server")
         self.setGeometry(100, 100, 700, 500)
 
@@ -82,14 +80,16 @@ class ChatServerWindow(QWidget):
                 ssl_socket = context.wrap_socket(client_socket, server_side=True)
                 clients.append((ssl_socket, client_address))
                 print(f"Connection from {client_address}")
-                threading.Thread(target=self.handle_client, args=(ssl_socket,), daemon=True).start()
+                threading.Thread(target=self.handle_client, args=(ssl_socket, client_address), daemon=True).start()
             except Exception as e:
                 print(f"Error accepting client: {e}")
 
-    def handle_client(self, client_socket):
+    def handle_client(self, client_socket, client_address):
         try:
             while True:
                 header = client_socket.recv(4).decode()
+                if not header:
+                    break
                 if header == "TEXT":
                     name_len = int(client_socket.recv(4).decode())
                     sender = client_socket.recv(name_len).decode()
@@ -120,9 +120,11 @@ class ChatServerWindow(QWidget):
                     self.display_message("System", result)
                     self.broadcast_message("System", result)
         except Exception as e:
-            print(f"Error with client: {e}")
+            print(f"Error with client {client_address}: {e}")
         finally:
             client_socket.close()
+            if (client_socket, client_address) in clients:
+                clients.remove((client_socket, client_address))
 
     def display_message(self, sender, message, side='left'):
         style = (
@@ -142,14 +144,16 @@ class ChatServerWindow(QWidget):
             self.entry.clear()
 
     def broadcast_message(self, sender, message):
-        for client_socket, _ in clients:
+        for client_socket, addr in clients[:]:
             try:
                 client_socket.send(b"TEXT")
                 client_socket.send(f"{len(sender):04}".encode())
                 client_socket.send(sender.encode())
                 client_socket.send(message.encode())
             except Exception as e:
-                print(f"Error broadcasting message: {e}")
+                self.chat_area.append(f"Error sending to {addr}, removing client. Error: {e}")
+                clients.remove((client_socket, addr))
+                client_socket.close()
 
     def browse_file(self):
         path, _ = QFileDialog.getOpenFileName(self)
@@ -163,7 +167,8 @@ class ChatServerWindow(QWidget):
 
             filename = os.path.basename(path)
             checksum = calculate_checksum(data)
-            for client_socket, _ in clients:
+
+            for client_socket, addr in clients[:]:
                 try:
                     client_socket.send(b"FILE")
                     client_socket.send(f"{len(self.name):04}".encode())
@@ -174,7 +179,9 @@ class ChatServerWindow(QWidget):
                     client_socket.send(checksum.encode())
                     client_socket.sendall(data)
                 except Exception as e:
-                    self.chat_area.append(f"Error sending file to a client: {e}")
+                    self.chat_area.append(f"Client {addr} disconnected. Removing. Error: {e}")
+                    clients.remove((client_socket, addr))
+                    client_socket.close()
 
             self.chat_area.append(f"Sent file {filename} to all clients")
         except Exception as e:
@@ -187,7 +194,6 @@ class ChatServerWindow(QWidget):
         cursor = self.chat_area.textCursor()
         selected_text = cursor.selectedText()
         QApplication.clipboard().setText(selected_text)
-
 
 if __name__ == "__main__":
     app = QApplication([])
